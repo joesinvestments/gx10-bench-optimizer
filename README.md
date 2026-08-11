@@ -46,6 +46,14 @@ Design rules, each paid for by a real failure:
   "could not compare", never a pass; a launcher without DRY_RUN support → fidelity exit 2.
   (The first lib/ integration broke fidelity's launcher resolution, and it ABORTED loudly
   instead of passing. That is the contract working.)
+- **Measurements enforce their own validity** (`lib/probe_battery_v2.py`): the battery
+  REFUSES to start against a non-idle server, DISCARDS any segment where foreign requests
+  complete mid-measurement, cache-busts every prompt by construction, and labels the
+  content class on every number (spec-decode throughput depends on output predictability;
+  a peak and a sustained number are different measurements). Paid for three times before
+  it became code: prefix-cache pollution, content-class conflation, and live-traffic
+  pollution each produced a published number that had to be walked back. A precondition
+  that lives in the operator's head instead of the instrument will be violated.
 - **Measure at the production shape**: probes read their prompt band and concurrency from
   the profile, not from constants.
 - **Stability first**: the window disqualifies any config that errors under storm or
