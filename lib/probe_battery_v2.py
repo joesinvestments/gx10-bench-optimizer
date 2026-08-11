@@ -64,7 +64,11 @@ def segment(tag, n_req, conc, ptok, otok, task, content_class):
         "content_class": content_class, "concurrency": conc, "wall_s": round(wall, 1),
         "prefill_toks_per_s": round(d("vllm:prompt_tokens_total") / max(d("vllm:request_prefill_time_seconds_sum"), 1e-9), 1),
         "decode_toks_per_s": round(d("vllm:generation_tokens_total") / max(d("vllm:request_decode_time_seconds_sum"), 1e-9), 1),
-        "acceptance_pct": round(100 * d("vllm:spec_decode_num_accepted_tokens_total") / max(d("vllm:spec_decode_num_draft_tokens_total"), 1), 1)}), flush=True)
+        "acceptance_pct": round(100 * d("vllm:spec_decode_num_accepted_tokens_total") / max(d("vllm:spec_decode_num_draft_tokens_total"), 1), 1),
+        # ms/step: acceptance-independent. tok/s swings +/-30% with draft-acceptance luck on
+        # random corpora; step time is the metric that compares across cells (2026-08-11 capfit lesson)
+        "ms_per_step": round(1000 * d("vllm:request_decode_time_seconds_sum") /
+            max(d("vllm:generation_tokens_total") / (1 + d("vllm:spec_decode_num_accepted_tokens_total") / max(d("vllm:spec_decode_num_draft_tokens_total"),1) * 2), 1e-9) / 1000 * 1000, 1) if d("vllm:spec_decode_num_draft_tokens_total") else None}), flush=True)
 
 SUMMARY = "Summarize in one sentence."          # high-acceptance ceiling class
 PROSE   = "Write a structured operations analysis of this dataset in 250 words."  # sustained class
