@@ -1,0 +1,6 @@
+GX10 Bench Optimizer
+Copyright 2026 joesinvestments
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+lib/ contains instruments developed on and for eugr/spark-vllm-docker-based deployments;
+all integration and instrumentation code is original to this repository.
