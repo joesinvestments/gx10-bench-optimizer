@@ -1,4 +1,6 @@
-# fleet, model-agnostic benchmarking + tuning for multi-node LLM serving
+# GX10 Bench Optimizer
+
+Model-agnostic benchmarking + tuning for multi-node LLM serving, in one command: `fleet`.
 
 One coherent system, two divisions, one command. **A model IS a profile file**
 `models/<name>.env`, ~15 keys. Adding a model to the entire system is writing that file.
