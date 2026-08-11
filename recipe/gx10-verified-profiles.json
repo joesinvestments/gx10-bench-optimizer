@@ -1,0 +1,39 @@
+{
+  "_comment": "OUR verified profiles, not r0b0tlab's. Diff target for apples-to-apples version tests. Values extracted 2026-08-03 from scripts/launch_tp4.sh + scripts/launch_rank_tp4.sh, not from memory.",
+
+  "tp4_v0252_verified": {
+    "_source": "scripts/launch_tp4.sh line 22-24 + launch_rank_tp4.sh line 46-60",
+    "_image": "ghcr.io/anemll/dspark-vllm-gx10:0.1.1 (vLLM 0.25.2)",
+    "_status": "production 2026-07-24..2026-08-03, served Hermes",
+    "_kv_note": "reported 3,506,232 KV tokens. NO --kv-cache-memory-bytes flag: the pool is whatever gpu_memory_utilization leaves. This is a STRUCTURAL difference from r0b0tlab, who pins an explicit byte cap.",
+
+    "max_model_len": 262144,
+    "max_num_seqs": 12,
+    "max_num_batched_tokens": 8264,
+    "gpu_memory_utilization": 0.85,
+    "max_cudagraph_capture_size": 96,
+    "enable_flashinfer_autotune": true,
+    "enforce_eager": false,
+    "vllm_sparse_indexer_max_logits_mb": 256,
+    "vllm_allow_long_max_model_len": 1,
+    "vllm_use_flashinfer_sampler": 1,
+    "vllm_use_b12x_moe": 1,
+    "vllm_memory_profiler_estimate_cudagraphs": 0
+  },
+
+  "tp4_v026_port_candidate": {
+    "_comment": "SAME parameters as tp4_v0252_verified, run on the 0.26.0 image. The ONLY intended variable is the vLLM version. Not yet launched or measured.",
+    "_image": "ghcr.io/r0b0tlab/deepseek-v4-flash-dspark-v026-sm121:v0.26.0-sm121-optimized",
+    "_status": "candidate-unmeasured",
+
+    "max_model_len": 262144,
+    "max_num_seqs": 12,
+    "max_num_batched_tokens": 8264,
+    "gpu_memory_utilization": 0.85,
+    "max_cudagraph_capture_size": 96,
+    "enable_flashinfer_autotune": true,
+    "enforce_eager": false,
+    "vllm_sparse_indexer_max_logits_mb": 256,
+    "vllm_allow_long_max_model_len": 1
+  }
+}

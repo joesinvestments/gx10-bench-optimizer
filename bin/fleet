@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# fleet — model-agnostic benchmarking + tuning for multi-node LLM serving clusters.
+#
+# ONE coherent system, TWO divisions:
+#   BENCH  — measurement. Read-mostly; safe against a serving cluster (each tool carries
+#            its own foreign-traffic guard where it sends requests).
+#   TUNE   — config lifecycle. Verification gates, drift audits, and the authorized
+#            experiment window. Nothing here changes a cluster without an explicit
+#            --authorized gate on the window itself.
+#
+# A model IS a profile: models/<name>.env. Adding a model = writing one file.
+# Instruments live in lib/ (symlinks to their maintained homes — single source of truth;
+# a future community release vendors them with `make dist`-style copying).
+#
+# USAGE
+#   fleet ls                                  list model profiles
+#   fleet <model> status                      endpoint, containers, live health
+#   fleet <model> corpus                      map of every ledger, result, reference
+#
+#   fleet <model> bench lanes                 list the 12 benchmark lanes (4 engines)
+#   fleet <model> bench run <preset|lanes..>  presets: quick health quality context full hermes
+#   fleet <model> bench probe-a|b|c           deep C=1 / storm C=max / mixed wedge-hunt
+#   fleet <model> bench parity [C] [label]    community apples-to-apples (techmd protocol)
+#   fleet <model> bench accept [--sweep ..]   spec-decode acceptance + temperature sweep
+#   fleet <model> bench snapshot              production EKG -> ledger row
+#
+#   fleet <model> tune preflight              manifest-vs-live config diff (read-only)
+#   fleet <model> tune fidelity               would auto-recovery reproduce production?
+#   fleet <model> tune audit [--strict]       cross-model knob divergence
+#   fleet <model> tune window [--authorized]  the staged experiment window (gated)
+#   fleet <model> tune floors                 quality-floor status (acceptance/RAM/cache)
+set -uo pipefail
+KIT="$(cd "$(dirname "$0")/.." && pwd)"
+LIB="$KIT/lib"
+usage() { grep '^#   fleet' "$0" | sed 's/^#  //'; }
+
+[ "${1:-}" = "ls" ] && { ls "$KIT/models" | sed 's/\.env$//;s/^/  /'; exit 0; }
+[ $# -lt 2 ] && { usage; exit 2; }
+
+MODEL_ARG=$1; DIV=$2; shift 2
+PROF=$(ls "$KIT/models" | grep -E "^${MODEL_ARG}.*\.env$" | head -1)
+[ -z "$PROF" ] && { echo "  ✖ no profile matching '$MODEL_ARG' (fleet ls)"; exit 2; }
+[ "$(ls "$KIT/models" | grep -cE "^${MODEL_ARG}.*\.env$")" -gt 1 ] && { echo "  ✖ '$MODEL_ARG' ambiguous"; exit 2; }
+# shellcheck disable=SC1090
+. "$KIT/models/$PROF"
+BASE_URL="http://$FLEET_HOST:$FLEET_PORT"
+
+# ── shared (division-less) commands ─────────────────────────────────────────
+case "$DIV" in
+  status)
+    printf '  %s @ %s\n' "$FLEET_MODEL_ID" "$BASE_URL"
+    curl -s -o /dev/null -w '  endpoint  HTTP %{http_code} in %{time_total}s\n' --max-time 8 "$BASE_URL/v1/models"
+    for n in $FLEET_NODES; do
+      ssh -o BatchMode=yes -o ConnectTimeout=8 "$n" \
+        "printf '  %-10s ' \$(hostname -s | cut -c1-9); \
+         docker ps --filter name=$FLEET_HEAD_CONTAINER --filter name=$FLEET_WORKER_CONTAINER \
+           --format '{{.Names}} {{.Status}}' | head -1 | grep . || echo 'no container'" 2>/dev/null
+    done
+    python3 - "$BASE_URL" <<'PY'
+import sys, urllib.request
+try:
+    t = urllib.request.urlopen(f"{sys.argv[1]}/metrics", timeout=8).read().decode()
+    def s(n): return sum(float(l.rsplit(" ",1)[1]) for l in t.splitlines()
+                         if l.startswith(n) and not l.startswith("#"))
+    a, d = s("vllm:spec_decode_num_accepted_tokens_total"), s("vllm:spec_decode_num_draft_tokens_total")
+    h, q = s("vllm:prefix_cache_hits_total"), s("vllm:prefix_cache_queries_total")
+    print(f"  running   {s('vllm:num_requests_running'):.0f}  waiting {s('vllm:num_requests_waiting'):.0f}")
+    if d: print(f"  accept    {100*a/d:.1f}% (boot cumulative)")
+    if q: print(f"  cache hit {100*h/q:.2f}%")
+except Exception as e:
+    print(f"  metrics unreachable: {e}")
+PY
+    exit 0 ;;
+  upstream)
+    # ★ WHY (Joe, 2026-08-08, after the DwarfStar 27% post): "this goes back to us not
+    # keeping our ear to the ground about competing 0731 implementations we can copy,
+    # clone or borrow from." Ear-to-the-ground as a COMMAND, not a habit: diffs every
+    # upstream HF + GitHub repo this model depends on against the last check, so "what
+    # moved since I last looked" is one invocation. Run at session start and before any
+    # tuning campaign. Reading what moved is still on the human/agent — this finds it.
+    STAMP="$KIT/.upstream-$FLEET_MODEL_ID"
+    LAST=$(cat "$STAMP" 2>/dev/null || echo "1970-01-01")
+    echo "  changes since last check ($LAST):"
+    python3 - "$LAST" $FLEET_UPSTREAM_HF <<'PY'
+import json, sys, urllib.request
+last = sys.argv[1]; moved = 0
+for repo in sys.argv[2:]:
+    try:
+        d = json.load(urllib.request.urlopen(f"https://huggingface.co/api/models/{repo}", timeout=15))
+        mod = d.get("lastModified", "?")[:10]
+        flag = "  ★ MOVED" if mod > last[:10] else ""
+        print(f"    hf  {repo:<58} {mod}{flag}"); moved += bool(flag)
+    except Exception as e:
+        print(f"    hf  {repo:<58} unreachable ({e})")
+PY
+    for r in $FLEET_UPSTREAM_GH; do
+      INFO=$(gh api "repos/$r" --jq '"\(.pushed_at[:10])"' 2>/dev/null || echo "?")
+      FLAG=""; [ "$INFO" \> "${LAST:0:10}" ] && FLAG="  ★ MOVED"
+      printf '    gh  %-58s %s%s\n' "$r" "$INFO" "$FLAG"
+    done
+    date +%Y-%m-%d > "$STAMP"
+    echo "  (stamp updated; ★ rows are what to actually go read)"
+    exit 0 ;;
+  corpus)
+    echo "  ── measurements ──"
+    echo "  $HOME/.dsfv4-watchdog/accept-ledger.tsv       production snapshots"
+    echo "  $HOME/.dsfv4-watchdog/kv-ledger.tsv           ctx->KV sweep results"
+    ls -dt "$HOME/Desktop/GX10-EVAL"/* 2>/dev/null | head -6 | sed 's/^/  /'
+    echo "  ── verified configs + vendored references ──"
+    echo "  $FLEET_BUNDLE/recipe/    $HOME/Desktop/DEEPSEEK-V4-RESTORE-BUNDLE/vendor/"
+    echo "  ── prior-model serving scripts ──"
+    echo "  $HOME/Desktop/GLM52-RESTORE-BUNDLE/fleet-scripts/  (28 scripts, pre-DeepSeek)"
+    echo "  ── procedure + lessons ──"
+    echo "  skill: gx10-model-eval · GLM delta: GLM52-RESTORE-BUNDLE/GLM-PREFLIGHT-*.md"
+    echo "  memories: ~/.claude/projects/-Users-gigachad-Desktop-{File-Dump,GX10}/memory/"
+    exit 0 ;;
+esac
+
+CMD="${1:-}"; shift 2>/dev/null || true
+case "$DIV" in
+# ═══════════════ DIVISION 1: BENCH — measurement ═══════════════
+bench)
+  case "$CMD" in
+    lanes)   python3 "$LIB/gx10bench.py" lanes "$@" ;;
+    run)     python3 "$LIB/gx10bench.py" run --base-url "$BASE_URL/v1" --model "$FLEET_MODEL_ID" "$@" ;;
+    probe-a) python3 "$LIB/longctx_probe.py" "$FLEET_HOST" "$FLEET_MODEL_ID" \
+               --tokens "$FLEET_DEEP_TOKENS" --runs 4 --label "$FLEET_MODEL_ID-A" "$@" ;;
+    probe-b) python3 "$LIB/longctx_probe.py" "$FLEET_HOST" "$FLEET_MODEL_ID" \
+               --tokens 1500 --runs 5 --max-tokens 150 \
+               --concurrency "$FLEET_STORM_CONCURRENCY" --label "$FLEET_MODEL_ID-B" "$@" ;;
+    probe-c) python3 "$LIB/longctx_probe.py" "$FLEET_HOST" "$FLEET_MODEL_ID" \
+               --tokens "$FLEET_DEEP_TOKENS" --mixed \
+               --concurrency "$FLEET_MIXED_CONCURRENCY" --label "$FLEET_MODEL_ID-C" "$@" ;;
+    parity)  python3 "$LIB/bst_parity.py" "$FLEET_HOST" "$FLEET_MODEL_ID" \
+               "${1:-1}" "${2:-$FLEET_MODEL_ID-parity}" ;;
+    accept)  python3 "$LIB/accept.py" --host "$FLEET_HOST" --model "$FLEET_MODEL_ID" "$@" ;;
+    snapshot) DSFV4_METRICS="$BASE_URL/metrics" python3 "$LIB/accept_snapshot.py" "$@" ;;
+    *) echo "  ✖ bench: unknown '$CMD'"; usage; exit 2 ;;
+  esac ;;
+# ═══════════════ DIVISION 2: TUNE — config lifecycle ═══════════════
+tune)
+  case "$CMD" in
+    preflight) DSFV4_CONTAINER="$FLEET_HEAD_CONTAINER" HOST="$FLEET_SSH_HEAD" \
+                 bash "$LIB/preflight-live.sh" "$@" ;;
+    fidelity)  DSFV4_SSH_HOST="$FLEET_SSH_HEAD" DSFV4_CONTAINER="$FLEET_HEAD_CONTAINER" \
+                 bash "$LIB/verify_recovery_fidelity.sh" "$@" ;;
+    audit)     python3 "$LIB/cross_model_audit.py" "$@" ;;
+    window)
+      # The staged experiment window: 9 boots, 3 probes/cell, stability-first winner, soak.
+      # HARD-GATED: refuses without --authorized; refuses with requests in flight.
+      # Cells are currently the DeepSeek campaign's; a new model's window forks the
+      # template and swaps cells — by design, cells ARE the experiment.
+      bash "$LIB/experiment_window.sh" "$@" ;;
+    floors)
+      echo "  quality floors (watchdog, 10-min delta windows):"
+      grep -E 'ACCEPT_FLOOR_PCT=|MEM_FLOOR_KB=|CACHE_FLOOR_PCT=|CACHE_GRACE_S=' \
+        "$HOME/.dsfv4-watchdog/dsfv4_watchdog.sh" | sed 's/#.*//;s/^/    /'
+      echo "  recent readings:"
+      grep 'quality:' "$HOME/.dsfv4-watchdog/watchdog.log" | tail -6 | sed 's/^/    /'
+      echo "  active alarms:"
+      ls "$HOME/.dsfv4-watchdog"/.{accept,mem,cache}_alarm 2>/dev/null | sed 's/^/    /' || echo "    none"
+      ;;
+    *) echo "  ✖ tune: unknown '$CMD'"; usage; exit 2 ;;
+  esac ;;
+*) echo "  ✖ unknown division '$DIV' (bench|tune|status|corpus)"; usage; exit 2 ;;
+esac

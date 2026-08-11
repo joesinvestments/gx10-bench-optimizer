@@ -1,0 +1,1 @@
+[{"Name":"memlock","Hard":-1,"Soft":-1},{"Name":"nofile","Hard":1048576,"Soft":1048576},{"Name":"stack","Hard":67108864,"Soft":67108864}]

@@ -1,0 +1,41 @@
+# approved-deviations.txt — deviations from r0b0tlab's production_profile that are
+# allowed on THIS fleet. Consumed by scripts/preflight.sh --approved.
+#
+# RULE: a line is UNCOMMENTED only after Joe approves it in chat. Everything else stays
+# commented, which makes preflight exit 1. Do not uncomment a line to make a red gate
+# go green — that is the whole failure mode this file exists to stop.
+#
+# Baseline captured 2026-08-03 from the live TP=4 container on gx10-1, image
+# ghcr.io/r0b0tlab/deepseek-v4-flash-dspark-v026-sm121:v0.26.0-sm121-optimized
+# manifest_sha256 f6777b31e8c89773 (recipe/runtime-manifest.vllm-sm121.3.json)
+
+# ── JOE-DIRECTED (verbatim instruction in chat 2026-08-03) ────────────────────
+# "yes relaunch both with 262144 and the bigger kv cap"
+max_model_len=262144                # approved by Joe 2026-08-03: our Hermes ceiling is
+                                    # 262K; his 327,680 is capacity we do not serve.
+kv_cache_memory_bytes=64424509440   # approved by Joe 2026-08-03: 60 GiB, "the bigger kv
+                                    # cap". His 15,998,753,178 (14.9 GiB) is a TP=2 value.
+
+# ── MINE, NOT REVIEWED BY JOE — these keep the gate RED on purpose ───────────
+# Each needs a decision. Uncommenting without one re-creates the original bug.
+#
+# max_num_batched_tokens=8192       # MINE. His profile is 16384; that OOM'd here at
+                                    # TP=4. 8192 was my pick, never A/B'd against 4096.
+                                    # This is the dominant KV lever (2048 -> 803,398 tok
+                                    # vs 16384 -> 302,184) so the value is NOT incidental.
+#
+# use_breakable_cudagraph=true      # NOT MINE and NOT his manifest: his own IMAGE bakes
+                                    # VLLM_USE_BREAKABLE_CUDAGRAPH=1 while his manifest
+                                    # declares use_breakable_cudagraph:false. His two
+                                    # artifacts disagree. Ask him before overriding either.
+#
+# VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256   # MINE, and the original contamination. Carried
+                                    # in from our pre-0.26.0 launcher. vLLM's default is
+                                    # 512; his image does NOT set this key at all
+                                    # (verified against the image baseline 2026-08-03).
+                                    # Halving the indexer logits budget is a real change.
+#
+# VLLM_ALLOW_LONG_MAX_MODEL_LEN=1   # MINE. Suppresses vLLM's own long-context sanity check.
+#
+# VLLM_ENGINE_ITERATION_TIMEOUT_S=1800    # MINE, carried from our launcher.
+# VLLM_RPC_TIMEOUT=600000                 # MINE, carried from our launcher.

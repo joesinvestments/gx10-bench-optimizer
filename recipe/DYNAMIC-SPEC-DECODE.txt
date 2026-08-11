@@ -1,0 +1,38 @@
+BATCH-AWARE (DYNAMIC) SPECULATIVE DECODING — verified present in our binary 2026-08-01
+=======================================================================================
+Binary: 0.25.2.dev0+g752a3a504.d20260714  (anemll DSpark fork, /usr/local/lib/python3.12/dist-packages/vllm)
+
+FIELD:  num_speculative_tokens_per_batch_size : list[tuple[int,int,int]]
+        each entry = (range_start, range_end, num_speculative_tokens), INCLUSIVE ranges
+        config/speculative.py:173 ; wired scheduler.py:237-243 ; validator v1/spec_decode/dynamic/utils.py
+        k = 0 is legal  ->  speculative decoding fully OFF for that batch range
+        NO incompatibility with method:"dspark" (lookup is built before the method branches)
+        cudagraphs handled: v1/worker/gpu/cudagraph_utils.py:198-225 captures a graph per k
+
+USAGE (launch_rank_tp4.sh now takes SPEC_CONFIG_B64 and GRAPH_CAPTURE):
+  DYN='{"method":"dspark","num_speculative_tokens":7,"draft_sample_method":"greedy",
+        "num_speculative_tokens_per_batch_size":[[1,4,7],[5,8,5],[9,12,3]]}'
+  SPEC_CONFIG_B64=$(printf '%s' "$DYN" | base64 | tr -d '\n')   # base64 so nested JSON survives ssh
+  ... MAX_NUM_SEQS=12 GRAPH_CAPTURE=96 SPEC_CONFIG_B64=$SPEC_CONFIG_B64 bash launch_rank_tp4.sh
+
+*** THE "CATCH" DOES NOT APPLY TO US — verified live 2026-08-01 ***
+config/vllm.py::_maybe_override_dynamic_sd_cudagraph_mode (L771, called L1204) would force
+cudagraph_mode FULL -> PIECEWISE, BUT it early-returns on `or self.use_v2_model_runner`.
+use_v2_model_runner (L519-532) returns True AUTOMATICALLY when speculative method == "dspark"
+("DSpark is implemented only by the V2 GPU model runner").
+=> With dspark we keep FULL_AND_PIECEWISE cudagraphs AND get dynamic SD. No tradeoff.
+Confirmed live: cudagraph_mode stayed <CUDAGraphMode.FULL_AND_PIECEWISE: (2,1)>, no keys dropped
+(arg_utils.py:1751 splats the JSON straight into the dataclass).
+
+*** DO NOT USE THE PIECEWISE WARNING AS A VALIDITY GATE ***
+Its ABSENCE is what working-correctly looks like on dspark. (I used it as a gate and wrongly
+declared a valid arm void.) Runtime use: scheduler.py:1087-1090
+  num_spec_tokens_to_schedule = self.dynamic_sd_lookup[len(num_scheduled_tokens)]
+
+RELATED CONSTANTS (read from this binary, all verified live):
+  scheduler.py:644            if num_running >= self.max_num_running_reqs: break   <- admission gate ONLY
+  gpu_model_runner.py:842     uniform_decode_query_len = 1 + num_spec_tokens = 8   <- decode batch = running x 8
+  config/vllm.py              max_num_scheduled_tokens = max_num_batched_tokens - (k-1)*max_num_seqs
+                              live at seqs=8 -> "max_num_scheduled_tokens is set to 8144" (= 8192-48)
+                              set --max-num-batched-tokens 8240 to restore a TRUE 8192
+  The old V0 flag disable_by_batch_size is DELETED (upstream PR #35060). Do not look for it.
