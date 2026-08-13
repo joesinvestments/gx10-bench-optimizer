@@ -82,6 +82,7 @@ supports `DRY_RUN=1` (print resolved argv, launch nothing). Non-conforming → e
 | ledgers, results, recipes, vendor refs, lessons | `corpus` | the knowledge map |
 | k/ctx sweeps | superseded | absorbed into the window |
 | sessbench3 / prefill_probe | niche | listed in `corpus` |
+| ras_probe.sh | not yet wired to a verb, run directly | NCCL RAS query across a TP group, single-shot, no loop; classifies a live stuck job as cross-rank collective divergence vs something else. Proven against a live GLM-5.2 wedge before landing here, see honest limits below. |
 
 ## Honest limits (the refinement backlog before community release)
 1. **Window cells are per-campaign**, the current cells are the DeepSeek k/greedy/mnbt
@@ -94,6 +95,14 @@ supports `DRY_RUN=1` (print resolved argv, launch nothing). Non-conforming → e
    still embed default IPs, absolute home paths, and internal memory references. `make
    dist` must vendor + scrub: default endpoints → required args, home paths → kit-relative,
    internal doc references → removed. Publish under the owner's handle per house rules.
+5. **`ras_probe.sh` isn't wired to a verb yet.** It's a real, proven instrument (caught a
+   genuine frozen cross-rank mismatch on a live GLM-5.2 wedge, confirmed by re-querying and
+   getting the identical frozen numbers twice), but it landed here straight from that
+   campaign and hasn't been generalized into `tune` the way the window cells were. The
+   natural home is a `tune diag` verb that runs it alongside a memory snapshot on WEDGED,
+   the same dual-snapshot pattern proven in that campaign: single-shot, never gates the
+   verdict, logged raw. Do that against a second real wedge on a different model, not
+   speculatively, same rule as the window cells above.
 
 
 ## Where this came from
